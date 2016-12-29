@@ -1,7 +1,10 @@
 package main
 
 import (
+	"crypto/tls"
 	"fmt"
+	"io"
+	"io/ioutil"
 	"net/http"
 	"time"
 
@@ -44,7 +47,13 @@ func (l *Load) Run() {
 }
 
 func (l *Load) worker(n int) {
-	tr := &http.Transport{}
+	tr := &http.Transport{
+		TLSClientConfig: &tls.Config{
+			InsecureSkipVerify: true,
+		},
+		DisableCompression: true,
+		DisableKeepAlives:  true,
+	}
 	client := &http.Client{
 		Transport: tr,
 		Timeout:   time.Duration(2) * time.Second,
@@ -58,7 +67,12 @@ func (l *Load) worker(n int) {
 func (l *Load) do(client *http.Client) {
 	var req = new(http.Request)
 	*req = *l.request
-	resp, _ := client.Do(req)
+	resp, err := client.Do(req)
+	if err != nil {
+		println(err.Error())
+		return
+	}
+	io.Copy(ioutil.Discard, resp.Body)
 	resp.Body.Close()
 }
 

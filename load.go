@@ -2,7 +2,7 @@ package main
 
 import (
 	"crypto/tls"
-	_ "fmt"
+	"fmt"
 	"io"
 	"io/ioutil"
 	"net/http"
@@ -14,6 +14,7 @@ import (
 
 type Result struct {
 	Timestamp time.Time
+	URL       string
 	Status    int
 	Error     error
 	Trace     Trace
@@ -26,7 +27,7 @@ type Trace struct {
 }
 
 type Load struct {
-	request             *http.Request
+	request             []*http.Request
 	requests            int
 	workers             int
 	rateLimit           int
@@ -37,16 +38,19 @@ type Load struct {
 }
 
 func NewTest() (Load, error) {
-	var err error
+	var urls = []string{"https://www.google.com", "https://www.freebsd.org"}
 	l := Load{}
-	l.request, err = http.NewRequest("GET", "https://www.google.com", nil)
-	l.request.Header.Add("User-Agent", "load")
+	for _, url := range urls {
+		req, err := http.NewRequest("GET", url, nil)
+		if err != nil {
+			continue
+		}
+		req.Header.Add("User-Agent", "load")
+		l.request = append(l.request, req)
+	}
 	l.timeout = time.Duration(2) * time.Second
 	l.requests = 10
 	l.workers = 2
-	if err != nil {
-		return l, err
-	}
 
 	return l, nil
 }
@@ -90,19 +94,23 @@ func (l *Load) worker(n int, resChan chan Result) {
 		Timeout:   l.timeout,
 	}
 	for i := 0; i < n; i++ {
-		resChan <- l.do(client)
+		for _, req := range l.request {
+			resChan <- l.do(client, req)
+		}
 	}
 }
 
-func (l *Load) do(client *http.Client) Result {
+func (l *Load) do(client *http.Client, request *http.Request) Result {
 	var (
 		req   = new(http.Request)
 		trace Trace
 	)
 
-	*req = *l.request
+	*req = *request
+
 	if !l.disabledTrace {
-		req = req.WithContext(httptrace.WithClientTrace(req.Context(), tracer(&trace)))
+		ctx := httptrace.WithClientTrace(req.Context(), tracer(&trace))
+		req = req.WithContext(ctx)
 	}
 	ts := time.Now()
 	resp, err := client.Do(req)
@@ -118,6 +126,7 @@ func (l *Load) do(client *http.Client) Result {
 
 	return Result{
 		Timestamp: ts,
+		URL:       req.URL.String(),
 		Status:    resp.StatusCode,
 		Error:     nil,
 		Trace:     trace,
@@ -125,7 +134,15 @@ func (l *Load) do(client *http.Client) Result {
 }
 
 func (l *Load) resultProc(resChan chan Result, wDoneChan chan struct{}) {
-
+LOOP:
+	for {
+		select {
+		case r := <-resChan:
+			fmt.Printf("%#v \n", r)
+		case <-wDoneChan:
+			break LOOP
+		}
+	}
 }
 
 func tracer(t *Trace) *httptrace.ClientTrace {

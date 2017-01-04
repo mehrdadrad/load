@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"io/ioutil"
+	"net"
 	"net/http"
 	"net/http/httptrace"
 	"time"
@@ -53,6 +54,16 @@ func NewTest() (Load, error) {
 	l.workers = 2
 
 	return l, nil
+}
+
+func (l *Load) gRPCServer() error {
+	lis, err := net.Listen("tcp", ":9055")
+	if err != nil {
+		return err
+	}
+	defer lis.Close()
+
+	return nil
 }
 
 func (l *Load) Run() {

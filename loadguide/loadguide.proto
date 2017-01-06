@@ -1,0 +1,22 @@
+syntax = "proto3";
+
+option java_multiple_files = true;
+option java_package = "io.grpc.loadguide";
+option java_outer_classname = "LoadGuideProto";
+
+package loadguide;
+
+service LoadGuide {
+    rpc SendLoad(PowerRequest) returns (LoadReply) {}
+}
+
+message PowerRequest {
+    int32 core = 1;
+    int32 weight = 2;
+}
+
+message LoadReply {
+    string url = 1;
+    int32 requests = 2;
+    int32 workers = 3;
+}

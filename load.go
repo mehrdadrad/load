@@ -8,9 +8,13 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptrace"
+	"sync"
 	"time"
 
-	"sync"
+	pb "github.com/mehrdadrad/load/loadguide"
+	"golang.org/x/net/context"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/reflection"
 )
 
 type Result struct {
@@ -38,6 +42,13 @@ type Load struct {
 	disabledKeepAlive   bool
 }
 
+type server struct{}
+
+func (s *server) SendLoad(cx context.Context, in *pb.PowerRequest) (*pb.LoadReply, error) {
+	// TODO
+	return &pb.LoadReply{}, nil
+}
+
 func NewTest() (Load, error) {
 	var urls = []string{"https://www.google.com", "https://www.freebsd.org"}
 	l := Load{}
@@ -62,6 +73,13 @@ func (l *Load) gRPCServer() error {
 		return err
 	}
 	defer lis.Close()
+	grpcServer := grpc.NewServer()
+	pb.RegisterLoadGuideServer(grpcServer, &server{})
+
+	reflection.Register(grpcServer)
+	if err := grpcServer.Serve(lis); err != nil {
+		return err
+	}
 
 	return nil
 }

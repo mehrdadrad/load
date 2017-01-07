@@ -8,6 +8,7 @@ package loadguide;
 
 service LoadGuide {
     rpc SendLoad(PowerRequest) returns (LoadReply) {}
+    rpc Ping(WhoAmI) returns (WhoAmI) {}
 }
 
 message PowerRequest {
@@ -19,4 +20,9 @@ message LoadReply {
     string url = 1;
     int32 requests = 2;
     int32 workers = 3;
+}
+
+message WhoAmI {
+    string name = 1;
+    string type = 2;
 }

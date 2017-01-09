@@ -17,7 +17,7 @@ message PowerRequest {
 }
 
 message LoadReply {
-    string url = 1;
+    repeated string urls = 1;
     int32 requests = 2;
     int32 workers = 3;
 }

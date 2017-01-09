@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"io/ioutil"
+	"log"
 	"net"
 	"net/http"
 	"net/http/httptrace"
@@ -46,6 +47,7 @@ type Trace struct {
 
 type Load struct {
 	request             []*http.Request
+	urls                []string
 	requests            int
 	workers             int
 	rateLimit           int
@@ -77,22 +79,27 @@ func (s *server) SendLoad(cx context.Context, in *pb.PowerRequest) (*pb.LoadRepl
 
 func (s *server) Ping(cx context.Context, in *pb.WhoAmI) (*pb.WhoAmI, error) {
 	println("Got Ping")
-	// TODO: ask load
 	go func() {
+		var err error
 		// send load request
-		w, r, err := loadRequest()
+		r, err := loadRequest()
 		if err != nil {
 
 		}
-		println("run load test w/", w, r)
+		lSlave, _ := NewTest()
+		lSlave.workers = int(r.Workers)
+		lSlave.requests = int(r.Requests)
+		lSlave.urls = r.Urls
+		println("run load test w/", lSlave.workers, lSlave.requests)
+		lSlave.Run()
 	}()
 	return &pb.WhoAmI{}, nil
 }
 
 func NewTest() (Load, error) {
-	var urls = []string{"https://www.google.com", "https://www.freebsd.org"}
 	l := Load{}
-	for _, url := range urls {
+	l.urls = []string{"https://www.google.com", "https://www.freebsd.org"}
+	for _, url := range l.urls {
 		req, err := http.NewRequest("GET", url, nil)
 		if err != nil {
 			continue
@@ -101,8 +108,8 @@ func NewTest() (Load, error) {
 		l.request = append(l.request, req)
 	}
 	l.timeout = time.Duration(2) * time.Second
-	l.requests = 10001
-	l.workers = 19
+	l.requests = 5
+	l.workers = 2
 
 	return l, nil
 }
@@ -126,7 +133,7 @@ func (l *Load) loadBalance() (int, int) {
 		workers := pct * int32(l.workers) / 100
 		rRequests -= int(requests)
 		rWorkers -= int(workers)
-		h.respChn <- pb.LoadReply{Workers: workers, Requests: requests}
+		h.respChn <- pb.LoadReply{Workers: workers, Requests: requests, Urls: l.urls}
 	}
 
 	return rRequests, rWorkers
@@ -164,10 +171,10 @@ func (l *Load) ping(addr string) (*pb.WhoAmI, error) {
 	return r, err
 }
 
-func loadRequest() (int, int, error) {
+func loadRequest() (*pb.LoadReply, error) {
 	conn, err := grpc.Dial("localhost:9055", grpc.WithInsecure())
 	if err != nil {
-		return 0, 0, nil
+		return nil, err
 	}
 	defer conn.Close()
 
@@ -177,10 +184,10 @@ func loadRequest() (int, int, error) {
 	}
 	r, err := c.SendLoad(context.Background(), request)
 	if err != nil {
-		return 0, 0, nil
+		return nil, err
 	}
 
-	return int(r.Workers), int(r.Requests), nil
+	return r, nil
 }
 
 func (l *Load) Run() {
@@ -337,29 +344,20 @@ func init() {
 }
 
 func main() {
-	println(ops.isSlave)
-
 	if ops.isSlave {
+		log.Print("Starting... as slave")
 		l.gRPCServer()
 	} else {
+		log.Print("Starting... as master")
+		lMaster := l
 		go l.gRPCServer()
 		if len(l.hosts) > 0 {
 			if !l.chkHosts(l.hosts) {
 				return
 			} else {
-				r, w := l.loadBalance()
-				println("run master :", w, r)
+				lMaster.requests, lMaster.workers = l.loadBalance()
 			}
 		}
+		lMaster.Run()
 	}
-
-	time.Sleep(5 * time.Second)
-	/*
-		l, err := NewTest()
-		if err != nil {
-			println(err.Error())
-			return
-		}
-		l.Run()
-	*/
 }

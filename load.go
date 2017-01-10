@@ -147,6 +147,11 @@ func (l *Load) loadBalance() (int, int) {
 		pct := (h.reqLoad.core * 100) / totalCores
 		requests := pct * int32(l.requests) / 100
 		workers := pct * int32(l.workers) / 100
+
+		if workers == 0 {
+			workers = 1
+		}
+
 		rRequests -= int(requests)
 		rWorkers -= int(workers)
 
@@ -324,6 +329,7 @@ func (l *Load) do(client *http.Client, request *http.Request) Result {
 func (l *Load) resultProc(resChan chan Result, wDoneChan chan struct{}) {
 	var (
 		c           pb.LoadGuideClient
+		slavesReq   = l.totalSlavesReq()
 		hostname, _ = os.Hostname()
 	)
 
@@ -352,14 +358,26 @@ LOOP:
 				fmt.Printf("MASTER: %#v \n", r.Status)
 			}
 		case r := <-slaveResChn:
-			_ = r
 			fmt.Printf("SLAVE: %#v \n", r.Status)
+			if slavesReq--; slavesReq <= 0 {
+				break LOOP
+			}
 		case <-wDoneChan:
-			break LOOP
+			if len(l.hosts) == 0 {
+				break LOOP
+			}
 		}
 	}
 }
 
+func (l *Load) totalSlavesReq() int {
+	var total int
+	for _, h := range l.hosts {
+		total += h.requests
+	}
+	urlNum := len(l.urls)
+	return total * urlNum
+}
 func tracer(t *Trace) *httptrace.ClientTrace {
 	var (
 		start   = time.Now()

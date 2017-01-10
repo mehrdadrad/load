@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptrace"
+	"os"
 	"runtime"
 	"strings"
 	"sync"
@@ -22,19 +23,22 @@ import (
 )
 
 type Options struct {
-	isSlave bool
-	urls    string
+	urls string
+	port string
 }
 
 type Host struct {
-	addr   string
-	status bool
+	addr     string
+	requests int
+	status   bool
+	reqLoad  ReqLReply
 }
 
 type Result struct {
-	Timestamp time.Time
+	ID        string
+	Timestamp int32
 	URL       string
-	Status    int
+	Status    int32
 	Error     error
 	Trace     Trace
 }
@@ -53,6 +57,7 @@ type Load struct {
 	rateLimit           int
 	timeout             time.Duration
 	hosts               []Host
+	isSlave             bool
 	disabledTrace       bool
 	disabledCompression bool
 	disabledKeepAlive   bool
@@ -65,12 +70,22 @@ type ReqLReply struct {
 
 type server struct{}
 
-var reqLoadChn chan ReqLReply
+var (
+	reqLoadChn  chan ReqLReply
+	slaveResChn = make(chan Result, 100)
+)
+
+func (s *server) SendResult(cx context.Context, in *pb.LoadResMsg) (*pb.Empty, error) {
+	slaveResChn <- Result{
+		ID:        in.ID,
+		Status:    in.Status,
+		URL:       in.Url,
+		Timestamp: in.Timestamp,
+	}
+	return &pb.Empty{}, nil
+}
 
 func (s *server) SendLoad(cx context.Context, in *pb.PowerRequest) (*pb.LoadReply, error) {
-	// TODO
-	println("GOT power!", in.Core)
-	println("Reply workers!")
 	var respChn = make(chan pb.LoadReply, 1)
 	reqLoadChn <- ReqLReply{in.Core, respChn}
 	loadReply := <-respChn
@@ -78,11 +93,11 @@ func (s *server) SendLoad(cx context.Context, in *pb.PowerRequest) (*pb.LoadRepl
 }
 
 func (s *server) Ping(cx context.Context, in *pb.WhoAmI) (*pb.WhoAmI, error) {
-	println("Got Ping")
+	log.Print("Got ping from master")
 	go func() {
 		var err error
-		// send load request
-		r, err := loadRequest()
+		// send load request to master
+		r, err := loadRequest(in.Addr)
 		if err != nil {
 
 		}
@@ -90,7 +105,8 @@ func (s *server) Ping(cx context.Context, in *pb.WhoAmI) (*pb.WhoAmI, error) {
 		lSlave.workers = int(r.Workers)
 		lSlave.requests = int(r.Requests)
 		lSlave.urls = r.Urls
-		println("run load test w/", lSlave.workers, lSlave.requests)
+		lSlave.isSlave = true
+		log.Printf("Ran slave : worker# %d, requests# %d", lSlave.workers, lSlave.requests)
 		lSlave.Run()
 	}()
 	return &pb.WhoAmI{}, nil
@@ -108,8 +124,6 @@ func NewTest() (Load, error) {
 		l.request = append(l.request, req)
 	}
 	l.timeout = time.Duration(2) * time.Second
-	l.requests = 5
-	l.workers = 2
 
 	return l, nil
 }
@@ -119,21 +133,24 @@ func (l *Load) loadBalance() (int, int) {
 		totalCores int32 = int32(runtime.NumCPU())
 		rRequests  int   = l.requests
 		rWorkers   int   = l.workers
-		tmp        []ReqLReply
 	)
-	for range l.hosts {
+
+	for i, _ := range l.hosts {
 		lc := <-reqLoadChn
 		totalCores += lc.core
-		tmp = append(tmp, lc)
+		l.hosts[i].reqLoad = lc
 	}
-	println(totalCores)
-	for _, h := range tmp {
-		pct := (h.core * 100) / totalCores
+
+	for i, h := range l.hosts {
+		pct := (h.reqLoad.core * 100) / totalCores
 		requests := pct * int32(l.requests) / 100
 		workers := pct * int32(l.workers) / 100
 		rRequests -= int(requests)
 		rWorkers -= int(workers)
-		h.respChn <- pb.LoadReply{Workers: workers, Requests: requests, Urls: l.urls}
+
+		l.hosts[i].requests = int(requests)
+
+		h.reqLoad.respChn <- pb.LoadReply{Workers: workers, Requests: requests, Urls: l.urls}
 	}
 
 	return rRequests, rWorkers
@@ -164,15 +181,38 @@ func (l *Load) ping(addr string) (*pb.WhoAmI, error) {
 	}
 	defer conn.Close()
 
+	lAddr, _ := getLocalAddr(addr)
+	hostName, _ := os.Hostname()
 	c := pb.NewLoadGuideClient(conn)
-	w := &pb.WhoAmI{}
+	w := &pb.WhoAmI{Name: hostName, Addr: lAddr.String()}
 	r, err := c.Ping(context.Background(), w)
 
 	return r, err
 }
 
-func loadRequest() (*pb.LoadReply, error) {
-	conn, err := grpc.Dial("localhost:9055", grpc.WithInsecure())
+func loadRequest(addr string) (*pb.LoadReply, error) {
+	hostPort := net.JoinHostPort(addr, "9055")
+	conn, err := grpc.Dial(hostPort, grpc.WithInsecure())
+	if err != nil {
+		return nil, err
+	}
+	defer conn.Close()
+
+	c := pb.NewLoadGuideClient(conn)
+	request := &pb.PowerRequest{
+		Core: int32(runtime.NumCPU()),
+	}
+	r, err := c.SendLoad(context.Background(), request)
+	if err != nil {
+		return nil, err
+	}
+
+	return r, nil
+}
+
+func sendResult(addr string) (*pb.LoadReply, error) {
+	hostPort := net.JoinHostPort(addr, "9055")
+	conn, err := grpc.Dial(hostPort, grpc.WithInsecure())
 	if err != nil {
 		return nil, err
 	}
@@ -204,11 +244,18 @@ func (l *Load) Run() {
 	}()
 
 	wg0.Add(l.workers)
-	for c := 0; c < l.workers; c++ {
-		go func() {
+
+	for c := 1; c <= l.workers; c++ {
+		go func(c int) {
+			reqPerWorker := l.requests / l.workers
 			defer wg0.Done()
-			l.worker(l.requests/l.workers, resChan)
-		}()
+			if c != l.workers {
+				l.worker(reqPerWorker, resChan)
+			} else {
+				reqPerWorker = l.requests - (reqPerWorker * (l.workers - 1))
+				l.worker(reqPerWorker, resChan)
+			}
+		}(c)
 	}
 
 	wg0.Wait()
@@ -251,7 +298,7 @@ func (l *Load) do(client *http.Client, request *http.Request) Result {
 	resp, err := client.Do(req)
 	if err != nil {
 		return Result{
-			Timestamp: ts,
+			Timestamp: int32(ts.Unix()),
 			Error:     err,
 		}
 	}
@@ -260,20 +307,47 @@ func (l *Load) do(client *http.Client, request *http.Request) Result {
 	resp.Body.Close()
 
 	return Result{
-		Timestamp: ts,
+		Timestamp: int32(ts.Unix()),
 		URL:       req.URL.String(),
-		Status:    resp.StatusCode,
+		Status:    int32(resp.StatusCode),
 		Error:     nil,
 		Trace:     trace,
 	}
 }
 
 func (l *Load) resultProc(resChan chan Result, wDoneChan chan struct{}) {
+	var (
+		c           pb.LoadGuideClient
+		hostname, _ = os.Hostname()
+	)
+
+	if l.isSlave {
+		hostPort := net.JoinHostPort("localhost", "9055")
+		conn, err := grpc.Dial(hostPort, grpc.WithInsecure())
+		if err != nil {
+			println("ERROR:", err.Error())
+		}
+		defer conn.Close()
+		c = pb.NewLoadGuideClient(conn)
+	}
+
 LOOP:
 	for {
 		select {
 		case r := <-resChan:
-			fmt.Printf("%#v \n", r)
+			if l.isSlave {
+				c.SendResult(context.Background(), &pb.LoadResMsg{
+					ID:        hostname,
+					Url:       r.URL,
+					Timestamp: r.Timestamp,
+					Status:    r.Status,
+				})
+			} else {
+				fmt.Printf("MASTER: %#v \n", r.Status)
+			}
+		case r := <-slaveResChn:
+			_ = r
+			fmt.Printf("SLAVE: %#v \n", r.Status)
 		case <-wDoneChan:
 			break LOOP
 		}
@@ -311,10 +385,10 @@ func (l *Load) chkHosts(hosts []Host) bool {
 		_, err := l.ping(hosts[i].addr)
 		if err != nil {
 			allUp = false
-			println(hosts[i].addr, "is unreachable")
+			log.Print(hosts[i].addr, " is unreachable")
 		} else {
 			hosts[i].status = true
-			println(hosts[i].addr, "is up")
+			log.Print(hosts[i].addr, " is up")
 		}
 	}
 	return allUp
@@ -325,18 +399,35 @@ var (
 	l   Load
 )
 
+func getLocalAddr(rAddr string) (net.Addr, error) {
+	conn, err := net.Dial("ip", rAddr)
+	if err != nil {
+		return nil, err
+	}
+	defer conn.Close()
+
+	return conn.LocalAddr(), nil
+}
+
 func init() {
 	var hosts string
-	flag.BoolVar(&ops.isSlave, "s", false, "slave mode")
-	flag.StringVar(&hosts, "h", "", "slave hosts")
-	flag.StringVar(&ops.urls, "u", "", "URLs")
-	flag.Parse()
 
 	l, _ = NewTest()
 
+	flag.BoolVar(&l.isSlave, "s", false, "slave mode")
+	flag.StringVar(&hosts, "h", "", "slave hosts")
+	flag.StringVar(&ops.urls, "u", "", "URLs")
+	flag.StringVar(&ops.port, "p", "9055", "port")
+	flag.IntVar(&l.requests, "r", 10, "port")
+	flag.IntVar(&l.workers, "w", 4, "port")
+	flag.Parse()
+
 	if hosts != "" {
 		for _, host := range strings.Split(hosts, ";") {
-			l.hosts = append(l.hosts, Host{host, false})
+			l.hosts = append(l.hosts, Host{
+				addr:   host,
+				status: false,
+			})
 		}
 	}
 
@@ -344,7 +435,7 @@ func init() {
 }
 
 func main() {
-	if ops.isSlave {
+	if l.isSlave {
 		log.Print("Starting... as slave")
 		l.gRPCServer()
 	} else {
@@ -358,6 +449,8 @@ func main() {
 				lMaster.requests, lMaster.workers = l.loadBalance()
 			}
 		}
+		log.Printf("Ran master : worker# %d, requests# %d", lMaster.workers, lMaster.requests)
 		lMaster.Run()
+		fmt.Printf("%#v\n", l.hosts)
 	}
 }

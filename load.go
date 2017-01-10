@@ -71,6 +71,7 @@ type ReqLReply struct {
 type server struct{}
 
 var (
+	masterAddr  string
 	reqLoadChn  chan ReqLReply
 	slaveResChn = make(chan Result, 100)
 )
@@ -94,6 +95,7 @@ func (s *server) SendLoad(cx context.Context, in *pb.PowerRequest) (*pb.LoadRepl
 
 func (s *server) Ping(cx context.Context, in *pb.WhoAmI) (*pb.WhoAmI, error) {
 	log.Print("Got ping from master")
+	masterAddr = in.Addr
 	go func() {
 		var err error
 		// send load request to master
@@ -326,7 +328,7 @@ func (l *Load) resultProc(resChan chan Result, wDoneChan chan struct{}) {
 	)
 
 	if l.isSlave {
-		hostPort := net.JoinHostPort("localhost", "9055")
+		hostPort := net.JoinHostPort(masterAddr, "9055")
 		conn, err := grpc.Dial(hostPort, grpc.WithInsecure())
 		if err != nil {
 			println("ERROR:", err.Error())

@@ -181,10 +181,14 @@ func (l *Load) ping(addr string) (*pb.WhoAmI, error) {
 	}
 	defer conn.Close()
 
-	lAddr, _ := getLocalAddr(addr)
-	hostName, _ := os.Hostname()
+	lAddr, err := getLocalAddr(addr)
+	if err != nil {
+		return &pb.WhoAmI{}, err
+	}
+
+	hostname, _ := os.Hostname()
 	c := pb.NewLoadGuideClient(conn)
-	w := &pb.WhoAmI{Name: hostName, Addr: lAddr.String()}
+	w := &pb.WhoAmI{Name: hostname, Addr: lAddr}
 	r, err := c.Ping(context.Background(), w)
 
 	return r, err
@@ -399,14 +403,20 @@ var (
 	l   Load
 )
 
-func getLocalAddr(rAddr string) (net.Addr, error) {
-	conn, err := net.Dial("ip", rAddr)
+func getLocalAddr(rAddr string) (string, error) {
+	hostPort := net.JoinHostPort(rAddr, "9055")
+	conn, err := net.Dial("tcp", hostPort)
 	if err != nil {
-		return nil, err
+		return "", err
 	}
 	defer conn.Close()
 
-	return conn.LocalAddr(), nil
+	host, _, err := net.SplitHostPort(conn.LocalAddr().String())
+	if err != nil {
+		return "", err
+	}
+
+	return host, nil
 }
 
 func init() {

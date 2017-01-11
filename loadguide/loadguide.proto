@@ -21,12 +21,15 @@ message LoadReply {
     repeated string urls = 1;
     int32 requests = 2;
     int32 workers = 3;
+    int32 timeout = 4;
+    string useragent = 5;
+    bool trace = 6;
 }
 
 message WhoAmI {
     string name = 1;
-    string type = 2;
-    string addr = 3;
+    string laddr = 2;
+    string raddr = 3;
 }
 
 message LoadResMsg {

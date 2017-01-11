@@ -2,7 +2,6 @@ package main
 
 import (
 	"crypto/tls"
-	"flag"
 	"fmt"
 	"io"
 	"io/ioutil"
@@ -12,7 +11,6 @@ import (
 	"net/http/httptrace"
 	"os"
 	"runtime"
-	"strings"
 	"sync"
 	"time"
 
@@ -103,31 +101,26 @@ func (s *server) Ping(cx context.Context, in *pb.WhoAmI) (*pb.WhoAmI, error) {
 		if err != nil {
 
 		}
-		lSlave, _ := NewTest()
+
+		lSlave := Load{}
 		lSlave.workers = int(r.Workers)
 		lSlave.requests = int(r.Requests)
 		lSlave.urls = r.Urls
 		lSlave.isSlave = true
+
+		for _, url := range lSlave.urls {
+			req, err := http.NewRequest("GET", url, nil)
+			if err != nil {
+				continue
+			}
+			req.Header.Add("User-Agent", "load")
+			lSlave.request = append(lSlave.request, req)
+		}
+
 		log.Printf("Ran slave : worker# %d, requests# %d", lSlave.workers, lSlave.requests)
 		lSlave.Run()
 	}()
 	return &pb.WhoAmI{}, nil
-}
-
-func NewTest() (Load, error) {
-	l := Load{}
-	l.urls = []string{"https://www.google.com", "https://www.freebsd.org"}
-	for _, url := range l.urls {
-		req, err := http.NewRequest("GET", url, nil)
-		if err != nil {
-			continue
-		}
-		req.Header.Add("User-Agent", "load")
-		l.request = append(l.request, req)
-	}
-	l.timeout = time.Duration(2) * time.Second
-
-	return l, nil
 }
 
 func (l *Load) loadBalance() (int, int) {
@@ -176,7 +169,6 @@ func (l *Load) gRPCServer() error {
 	if err := grpcServer.Serve(lis); err != nil {
 		return err
 	}
-
 	return nil
 }
 
@@ -270,7 +262,11 @@ func (l *Load) Run() {
 	}
 
 	wg0.Wait()
-	wDoneChan <- struct{}{}
+
+	if !l.isSlave {
+		wDoneChan <- struct{}{}
+	}
+
 	wg1.Wait()
 }
 
@@ -329,8 +325,12 @@ func (l *Load) do(client *http.Client, request *http.Request) Result {
 func (l *Load) resultProc(resChan chan Result, wDoneChan chan struct{}) {
 	var (
 		c           pb.LoadGuideClient
-		slavesReq   = l.totalSlavesReq()
-		hostname, _ = os.Hostname()
+		counter     int
+		slavesReq        = l.totalSlavesReq()
+		hostname, _      = os.Hostname()
+		progChn          = make(chan Result, 100)
+		masterDone  bool = l.isSlave
+		slavesDone  bool = false
 	)
 
 	if l.isSlave {
@@ -343,8 +343,16 @@ func (l *Load) resultProc(resChan chan Result, wDoneChan chan struct{}) {
 		c = pb.NewLoadGuideClient(conn)
 	}
 
-LOOP:
+	if slavesReq == 0 && !l.isSlave {
+		slavesDone = true
+	}
+
+	go progress(l.hosts, progChn)
+
 	for {
+		if masterDone && slavesDone {
+			break
+		}
 		select {
 		case r := <-resChan:
 			if l.isSlave {
@@ -354,20 +362,25 @@ LOOP:
 					Timestamp: r.Timestamp,
 					Status:    r.Status,
 				})
+				if counter++; counter >= l.requests {
+					slavesDone = true
+				}
 			} else {
-				fmt.Printf("MASTER: %#v \n", r.Status)
+				//fmt.Printf("MASTER: %#v \n", r.Status)
+				progChn <- r
 			}
 		case r := <-slaveResChn:
-			fmt.Printf("SLAVE: %#v \n", r.Status)
+			//fmt.Printf("SLAVE: %#v \n", r.Status)
+			progChn <- r
 			if slavesReq--; slavesReq <= 0 {
-				break LOOP
+				slavesDone = true
 			}
 		case <-wDoneChan:
-			if len(l.hosts) == 0 {
-				break LOOP
-			}
+			masterDone = true
 		}
 	}
+
+	close(progChn)
 }
 
 func (l *Load) totalSlavesReq() int {
@@ -440,27 +453,7 @@ func getLocalAddr(rAddr string) (string, error) {
 }
 
 func init() {
-	var hosts string
-
-	l, _ = NewTest()
-
-	flag.BoolVar(&l.isSlave, "s", false, "slave mode")
-	flag.StringVar(&hosts, "h", "", "slave hosts")
-	flag.StringVar(&ops.urls, "u", "", "URLs")
-	flag.StringVar(&ops.port, "p", "9055", "port")
-	flag.IntVar(&l.requests, "r", 10, "port")
-	flag.IntVar(&l.workers, "w", 4, "port")
-	flag.Parse()
-
-	if hosts != "" {
-		for _, host := range strings.Split(hosts, ";") {
-			l.hosts = append(l.hosts, Host{
-				addr:   host,
-				status: false,
-			})
-		}
-	}
-
+	l = parseFlags()
 	reqLoadChn = make(chan ReqLReply, len(l.hosts)+1)
 }
 

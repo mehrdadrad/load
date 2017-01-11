@@ -70,6 +70,7 @@ type server struct{}
 
 var (
 	masterAddr  string
+	slaveID     string
 	reqLoadChn  chan ReqLReply
 	slaveResChn = make(chan Result, 100)
 )
@@ -93,11 +94,12 @@ func (s *server) SendLoad(cx context.Context, in *pb.PowerRequest) (*pb.LoadRepl
 
 func (s *server) Ping(cx context.Context, in *pb.WhoAmI) (*pb.WhoAmI, error) {
 	log.Print("Got ping from master")
-	masterAddr = in.Addr
+	masterAddr = in.Laddr
+	slaveID = in.Raddr
 	go func() {
 		var err error
 		// send load request to master
-		r, err := loadRequest(in.Addr)
+		r, err := loadRequest(in.Laddr)
 		if err != nil {
 
 		}
@@ -187,7 +189,7 @@ func (l *Load) ping(addr string) (*pb.WhoAmI, error) {
 
 	hostname, _ := os.Hostname()
 	c := pb.NewLoadGuideClient(conn)
-	w := &pb.WhoAmI{Name: hostname, Addr: lAddr}
+	w := &pb.WhoAmI{Name: hostname, Laddr: lAddr}
 	r, err := c.Ping(context.Background(), w)
 
 	return r, err
@@ -324,13 +326,12 @@ func (l *Load) do(client *http.Client, request *http.Request) Result {
 
 func (l *Load) resultProc(resChan chan Result, wDoneChan chan struct{}) {
 	var (
-		c           pb.LoadGuideClient
-		counter     int
-		slavesReq        = l.totalSlavesReq()
-		hostname, _      = os.Hostname()
-		progChn          = make(chan Result, 100)
-		masterDone  bool = l.isSlave
-		slavesDone  bool = false
+		c          pb.LoadGuideClient
+		counter    int
+		slavesReq       = l.totalSlavesReq()
+		progChn         = make(chan Result, 100)
+		masterDone bool = l.isSlave
+		slavesDone bool = false
 	)
 
 	if l.isSlave {
@@ -357,7 +358,7 @@ func (l *Load) resultProc(resChan chan Result, wDoneChan chan struct{}) {
 		case r := <-resChan:
 			if l.isSlave {
 				c.SendResult(context.Background(), &pb.LoadResMsg{
-					ID:        hostname,
+					ID:        slaveID,
 					Url:       r.URL,
 					Timestamp: r.Timestamp,
 					Status:    r.Status,

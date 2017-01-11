@@ -189,7 +189,7 @@ func (l *Load) ping(addr string) (*pb.WhoAmI, error) {
 
 	hostname, _ := os.Hostname()
 	c := pb.NewLoadGuideClient(conn)
-	w := &pb.WhoAmI{Name: hostname, Laddr: lAddr}
+	w := &pb.WhoAmI{Name: hostname, Laddr: lAddr, Raddr: addr}
 	r, err := c.Ping(context.Background(), w)
 
 	return r, err
@@ -348,7 +348,7 @@ func (l *Load) resultProc(resChan chan Result, wDoneChan chan struct{}) {
 		slavesDone = true
 	}
 
-	go progress(l.hosts, progChn)
+	go progress(l, progChn)
 
 	for {
 		if masterDone && slavesDone {
@@ -381,6 +381,7 @@ func (l *Load) resultProc(resChan chan Result, wDoneChan chan struct{}) {
 		}
 	}
 
+	time.Sleep(100 * time.Millisecond)
 	close(progChn)
 }
 

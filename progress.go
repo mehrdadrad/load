@@ -2,31 +2,38 @@ package main
 
 import (
 	"fmt"
-	_ "github.com/gosuri/uiprogress"
+	"github.com/gosuri/uiprogress"
 	_ "sync"
 	_ "time"
 )
 
-func progress(hosts []Host, resChn chan Result) {
-	//waitTime := time.Millisecond * 100
-	//uiprogress.Start()
+func progress(l *Load, resChn chan Result) {
+	var (
+		bar            = make(map[string]*uiprogress.Bar)
+		slavesRequests int
+	)
 
-	//var wg sync.WaitGroup
-	/*
-		bar1 := uiprogress.AddBar(20).AppendCompleted().PrependElapsed()
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for bar1.Incr() {
-				time.Sleep(waitTime)
-			}
-		}()
-	*/
+	for _, h := range l.hosts {
+		fmt.Printf("%#v \n", h)
+		bar[h.addr] = uiprogress.AddBar(h.requests).AppendCompleted().PrependElapsed()
+		bar[h.addr].PrependFunc(func(b *uiprogress.Bar) string {
+			return fmt.Sprintf("Slave  ")
+		})
+		slavesRequests += h.requests
+	}
+
+	bar[""] = uiprogress.AddBar(l.requests - slavesRequests).AppendCompleted().PrependElapsed()
+	bar[""].PrependFunc(func(b *uiprogress.Bar) string {
+		return fmt.Sprintf("Master ")
+	})
+
+	uiprogress.Start()
+
 	for {
 		r, ok := <-resChn
 		if !ok {
 			break
 		}
-		fmt.Printf("%#v \n", r)
+		bar[r.ID].Incr()
 	}
 }

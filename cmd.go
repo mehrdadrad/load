@@ -2,18 +2,17 @@ package main
 
 import (
 	"flag"
-	_ "fmt"
 	"log"
 	"net/http"
 	"net/url"
 	"os"
-	"strings"
 	"time"
 )
 
-type URLs []string
+type CMDURLs []string
+type CMDHosts []string
 
-func (i *URLs) Set(value string) error {
+func (i *CMDURLs) Set(value string) error {
 	if _, err := url.ParseRequestURI(value); err != nil {
 		return err
 	}
@@ -21,32 +20,41 @@ func (i *URLs) Set(value string) error {
 	return nil
 }
 
-func (i *URLs) String() string {
+func (i *CMDURLs) String() string {
+	return ""
+}
+
+func (i *CMDHosts) Set(value string) error {
+	*i = append(*i, value)
+	return nil
+}
+
+func (i *CMDHosts) String() string {
 	return ""
 }
 
 func parseFlags() Load {
 	var (
-		hosts string
-		urls  URLs
+		hosts CMDHosts
+		urls  CMDURLs
 		l     = Load{}
 	)
 
-	flag.BoolVar(&l.isSlave, "s", false, "slave mode")
-	flag.StringVar(&hosts, "h", "", "slave hosts")
+	flag.Var(&hosts, "h", "slave hosts")
 	flag.Var(&urls, "u", "URLs")
-	flag.StringVar(&ops.port, "p", "9055", "port")
+	flag.StringVar(&opt.port, "p", "9055", "port")
+	flag.StringVar(&opt.mAddr, "b", "", "bind address")
+	flag.BoolVar(&opt.quiet, "q", false, "quiet output")
+	flag.BoolVar(&l.isSlave, "s", false, "slave mode")
 	flag.IntVar(&l.requests, "r", 10, "requests")
 	flag.IntVar(&l.workers, "c", 4, "concurrency")
 	flag.Parse()
 
-	if hosts != "" {
-		for _, host := range strings.Split(hosts, ";") {
-			l.hosts = append(l.hosts, Host{
-				addr:   host,
-				status: false,
-			})
-		}
+	for _, host := range hosts {
+		l.hosts = append(l.hosts, Host{
+			addr:   host,
+			status: false,
+		})
 	}
 
 	if len(urls) < 1 && !l.isSlave {
@@ -67,4 +75,11 @@ func parseFlags() Load {
 	l.timeout = time.Duration(2) * time.Second
 
 	return l
+}
+
+func flagUsage() string {
+	// TODO
+	return `
+
+	`
 }

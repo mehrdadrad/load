@@ -74,6 +74,7 @@ type server struct{}
 var (
 	masterAddr  string
 	slaveID     string
+	lSlave      Load
 	reqLoadChn  chan ReqLReply
 	slaveResChn = make(chan Result, 100)
 	sigChn      = make(chan os.Signal, 1)
@@ -98,7 +99,9 @@ func (s *server) SendLoad(cx context.Context, in *pb.PowerRequest) (*pb.LoadRepl
 }
 
 func (s *server) SendSignal(cx context.Context, in *pb.Signal) (*pb.Empty, error) {
-	close(shutdownChn)
+	for i := 0; i <= lSlave.workers; i++ {
+		shutdownChn <- struct{}{}
+	}
 	log.Print("Interrupt requested")
 	return &pb.Empty{}, nil
 }
@@ -115,11 +118,12 @@ func (s *server) Ping(cx context.Context, in *pb.WhoAmI) (*pb.WhoAmI, error) {
 			// TODO
 		}
 
-		lSlave := Load{}
-		lSlave.workers = int(r.Workers)
-		lSlave.requests = int(r.Requests)
-		lSlave.urls = r.Urls
-		lSlave.isSlave = true
+		lSlave = Load{
+			workers:  int(r.Workers),
+			requests: int(r.Requests),
+			urls:     r.Urls,
+			isSlave:  true,
+		}
 
 		for _, url := range lSlave.urls {
 			req, err := http.NewRequest("GET", url, nil)
@@ -133,6 +137,7 @@ func (s *server) Ping(cx context.Context, in *pb.WhoAmI) (*pb.WhoAmI, error) {
 		log.Printf("Ran slave : worker# %d, requests# %d", lSlave.workers, lSlave.requests)
 		lSlave.Run()
 	}()
+
 	return &pb.WhoAmI{}, nil
 }
 
@@ -485,7 +490,7 @@ func (l *Load) gracefullStop() {
 		sendSignal(h.addr, 2)
 	}
 	if len(l.hosts) > 0 {
-		log.Print("sent interrupt signal to all slave(s)")
+		log.Print("Sent interrupt signal to all slave(s)")
 	}
 
 	time.Sleep(2 * time.Second)
@@ -525,7 +530,7 @@ func intSigHandler(isSlave bool) {
 		select {
 		case <-sigChn:
 			l.gracefullStop()
-			log.Print("interrupt requested")
+			log.Print("Interrupt requested")
 			os.Exit(1)
 		case <-time.Tick(1 * time.Second):
 		}

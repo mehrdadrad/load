@@ -2,7 +2,6 @@ package main
 
 import (
 	"crypto/tls"
-	"fmt"
 	"io"
 	"io/ioutil"
 	"log"
@@ -10,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptrace"
 	"os"
+	"os/signal"
 	"runtime"
 	"sync"
 	"time"
@@ -21,8 +21,11 @@ import (
 )
 
 type Options struct {
-	urls string
-	port string
+	urls  string
+	port  string
+	mAddr string
+
+	quiet bool
 }
 
 type Host struct {
@@ -37,7 +40,7 @@ type Result struct {
 	Timestamp int32
 	URL       string
 	Status    int32
-	Error     error
+	Error     string
 	Trace     Trace
 }
 
@@ -73,6 +76,8 @@ var (
 	slaveID     string
 	reqLoadChn  chan ReqLReply
 	slaveResChn = make(chan Result, 100)
+	sigChn      = make(chan os.Signal, 1)
+	shutdownChn = make(chan struct{}, 1)
 )
 
 func (s *server) SendResult(cx context.Context, in *pb.LoadResMsg) (*pb.Empty, error) {
@@ -92,6 +97,11 @@ func (s *server) SendLoad(cx context.Context, in *pb.PowerRequest) (*pb.LoadRepl
 	return &loadReply, nil
 }
 
+func (s *server) SendSignal(cx context.Context, in *pb.Signal) (*pb.Empty, error) {
+	// TODO: stop workers
+	return &pb.Empty{}, nil
+}
+
 func (s *server) Ping(cx context.Context, in *pb.WhoAmI) (*pb.WhoAmI, error) {
 	log.Print("Got ping from master")
 	masterAddr = in.Laddr
@@ -101,7 +111,7 @@ func (s *server) Ping(cx context.Context, in *pb.WhoAmI) (*pb.WhoAmI, error) {
 		// send load request to master
 		r, err := loadRequest(in.Laddr)
 		if err != nil {
-
+			// TODO
 		}
 
 		lSlave := Load{}
@@ -158,10 +168,12 @@ func (l *Load) loadBalance() (int, int) {
 	return rRequests, rWorkers
 }
 
-func (l *Load) gRPCServer() error {
-	lis, err := net.Listen("tcp", ":9055")
+func (l *Load) gRPCServer() {
+	hostPort := net.JoinHostPort(opt.mAddr, opt.port)
+	lis, err := net.Listen("tcp", hostPort)
 	if err != nil {
-		return err
+		log.Print(err.Error())
+		os.Exit(1)
 	}
 	defer lis.Close()
 	grpcServer := grpc.NewServer()
@@ -169,13 +181,13 @@ func (l *Load) gRPCServer() error {
 
 	reflection.Register(grpcServer)
 	if err := grpcServer.Serve(lis); err != nil {
-		return err
+		log.Print(err.Error())
+		os.Exit(1)
 	}
-	return nil
 }
 
 func (l *Load) ping(addr string) (*pb.WhoAmI, error) {
-	hostPort := net.JoinHostPort(addr, "9055")
+	hostPort := net.JoinHostPort(addr, opt.port)
 	conn, err := grpc.Dial(hostPort, grpc.WithInsecure())
 	if err != nil {
 		return &pb.WhoAmI{}, err
@@ -196,7 +208,7 @@ func (l *Load) ping(addr string) (*pb.WhoAmI, error) {
 }
 
 func loadRequest(addr string) (*pb.LoadReply, error) {
-	hostPort := net.JoinHostPort(addr, "9055")
+	hostPort := net.JoinHostPort(addr, opt.port)
 	conn, err := grpc.Dial(hostPort, grpc.WithInsecure())
 	if err != nil {
 		return nil, err
@@ -233,6 +245,24 @@ func sendResult(addr string) (*pb.LoadReply, error) {
 	}
 
 	return r, nil
+}
+
+func sendSignal(addr string, signal int) (*pb.Empty, error) {
+	hostPort := net.JoinHostPort(addr, opt.port)
+	conn, err := grpc.Dial(hostPort, grpc.WithInsecure())
+	if err != nil {
+		return nil, err
+	}
+	defer conn.Close()
+
+	c := pb.NewLoadGuideClient(conn)
+	request := &pb.Signal{int32(signal)}
+	_, err = c.SendSignal(context.Background(), request)
+	if err != nil {
+		return nil, err
+	}
+
+	return &pb.Empty{}, nil
 }
 
 func (l *Load) Run() {
@@ -284,7 +314,14 @@ func (l *Load) worker(n int, resChan chan Result) {
 		Transport: tr,
 		Timeout:   l.timeout,
 	}
+
+LOOP:
 	for i := 0; i < n; i++ {
+		select {
+		case <-shutdownChn:
+			break LOOP
+		default:
+		}
 		for _, req := range l.request {
 			resChan <- l.do(client, req)
 		}
@@ -308,7 +345,8 @@ func (l *Load) do(client *http.Client, request *http.Request) Result {
 	if err != nil {
 		return Result{
 			Timestamp: int32(ts.Unix()),
-			Error:     err,
+			URL:       req.URL.String(),
+			Error:     err.Error(),
 		}
 	}
 
@@ -319,7 +357,7 @@ func (l *Load) do(client *http.Client, request *http.Request) Result {
 		Timestamp: int32(ts.Unix()),
 		URL:       req.URL.String(),
 		Status:    int32(resp.StatusCode),
-		Error:     nil,
+		Error:     "",
 		Trace:     trace,
 	}
 }
@@ -434,9 +472,22 @@ func (l *Load) chkHosts(hosts []Host) bool {
 }
 
 var (
-	ops Options
+	opt Options
 	l   Load
 )
+
+func (l *Load) gracefullStop() {
+	close(shutdownChn)
+
+	for _, h := range l.hosts {
+		sendSignal(h.addr, 2)
+	}
+	if len(l.hosts) > 0 {
+		log.Print("sent interrupt signal to all slave(s)")
+	}
+
+	time.Sleep(2 * time.Second)
+}
 
 func getLocalAddr(rAddr string) (string, error) {
 	hostPort := net.JoinHostPort(rAddr, "9055")
@@ -454,7 +505,16 @@ func getLocalAddr(rAddr string) (string, error) {
 	return host, nil
 }
 
+func quiet() bool {
+	if opt.quiet {
+		return true
+	}
+	return false
+}
+
 func init() {
+	signal.Notify(sigChn, os.Interrupt)
+
 	l = parseFlags()
 	reqLoadChn = make(chan ReqLReply, len(l.hosts)+1)
 }
@@ -475,7 +535,24 @@ func main() {
 			}
 		}
 		log.Printf("Ran master : worker# %d, requests# %d", lMaster.workers, lMaster.requests)
+		go func() {
+			for {
+				select {
+				case <-sigChn:
+					log.Print("interrupt requested, staring gracefully shutdown")
+					l.gracefullStop()
+					os.Exit(1)
+				case <-time.Tick(1 * time.Second):
+				}
+			}
+		}()
 		lMaster.Run()
-		fmt.Printf("%#v\n", l.hosts)
+
+		select {
+		case <-shutdownChn:
+			time.Sleep(1 * time.Minute)
+		default:
+			log.Print("Test has been done")
+		}
 	}
 }

@@ -512,10 +512,23 @@ func quiet() bool {
 	return false
 }
 
-func init() {
+func intSigHandler() {
 	signal.Notify(sigChn, os.Interrupt)
 
+	for {
+		select {
+		case <-sigChn:
+			log.Print("interrupt requested, staring gracefully shutdown")
+			l.gracefullStop()
+			os.Exit(1)
+		case <-time.Tick(1 * time.Second):
+		}
+	}
+}
+
+func init() {
 	l = parseFlags()
+	go intSigHandler()
 	reqLoadChn = make(chan ReqLReply, len(l.hosts)+1)
 }
 
@@ -535,17 +548,6 @@ func main() {
 			}
 		}
 		log.Printf("Ran master : worker# %d, requests# %d", lMaster.workers, lMaster.requests)
-		go func() {
-			for {
-				select {
-				case <-sigChn:
-					log.Print("interrupt requested, staring gracefully shutdown")
-					l.gracefullStop()
-					os.Exit(1)
-				case <-time.Tick(1 * time.Second):
-				}
-			}
-		}()
 		lMaster.Run()
 
 		select {

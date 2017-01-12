@@ -98,7 +98,8 @@ func (s *server) SendLoad(cx context.Context, in *pb.PowerRequest) (*pb.LoadRepl
 }
 
 func (s *server) SendSignal(cx context.Context, in *pb.Signal) (*pb.Empty, error) {
-	// TODO: stop workers
+	close(shutdownChn)
+	log.Print("Interrupt requested")
 	return &pb.Empty{}, nil
 }
 
@@ -376,7 +377,7 @@ func (l *Load) resultProc(resChan chan Result, wDoneChan chan struct{}) {
 		hostPort := net.JoinHostPort(masterAddr, "9055")
 		conn, err := grpc.Dial(hostPort, grpc.WithInsecure())
 		if err != nil {
-			println("ERROR:", err.Error())
+			log.Print(err.Error())
 		}
 		defer conn.Close()
 		c = pb.NewLoadGuideClient(conn)
@@ -405,15 +406,15 @@ func (l *Load) resultProc(resChan chan Result, wDoneChan chan struct{}) {
 					slavesDone = true
 				}
 			} else {
-				//fmt.Printf("MASTER: %#v \n", r.Status)
 				progChn <- r
 			}
 		case r := <-slaveResChn:
-			//fmt.Printf("SLAVE: %#v \n", r.Status)
 			progChn <- r
 			if slavesReq--; slavesReq <= 0 {
 				slavesDone = true
 			}
+		case <-shutdownChn:
+			slavesDone = true
 		case <-wDoneChan:
 			masterDone = true
 		}
@@ -431,6 +432,7 @@ func (l *Load) totalSlavesReq() int {
 	urlNum := len(l.urls)
 	return total * urlNum
 }
+
 func tracer(t *Trace) *httptrace.ClientTrace {
 	var (
 		start   = time.Now()
@@ -512,14 +514,18 @@ func quiet() bool {
 	return false
 }
 
-func intSigHandler() {
+func intSigHandler(isSlave bool) {
+	if isSlave {
+		return
+	}
+
 	signal.Notify(sigChn, os.Interrupt)
 
 	for {
 		select {
 		case <-sigChn:
-			log.Print("interrupt requested, staring gracefully shutdown")
 			l.gracefullStop()
+			log.Print("interrupt requested")
 			os.Exit(1)
 		case <-time.Tick(1 * time.Second):
 		}
@@ -528,7 +534,7 @@ func intSigHandler() {
 
 func init() {
 	l = parseFlags()
-	go intSigHandler()
+	go intSigHandler(l.isSlave)
 	reqLoadChn = make(chan ReqLReply, len(l.hosts)+1)
 }
 

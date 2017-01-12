@@ -323,13 +323,12 @@ func (l *Load) worker(n int, resChan chan Result) {
 
 LOOP:
 	for i := 0; i < n; i++ {
-		select {
-		case <-shutdownChn:
-			break LOOP
-		default:
-		}
 		for _, req := range l.request {
-			resChan <- l.do(client, req)
+			select {
+			case <-shutdownChn:
+				break LOOP
+			case resChan <- l.do(client, req):
+			}
 		}
 	}
 }

@@ -3,37 +3,42 @@ package main
 import (
 	"fmt"
 	"github.com/gosuri/uiprogress"
-	_ "sync"
-	_ "time"
+	"github.com/gosuri/uiprogress/util/strutil"
 )
 
 func progress(l *Load, resChn chan Result) {
 	var (
-		bar            = make(map[string]*uiprogress.Bar)
-		slavesRequests int
+		bars = make(map[string]*uiprogress.Bar)
+		p    = uiprogress.New()
 	)
 
-	for _, h := range l.hosts {
-		fmt.Printf("%#v \n", h)
-		bar[h.addr] = uiprogress.AddBar(h.requests).AppendCompleted().PrependElapsed()
-		bar[h.addr].PrependFunc(func(b *uiprogress.Bar) string {
-			return fmt.Sprintf("Slave  ")
-		})
-		slavesRequests += h.requests
+	if quiet() || l.isSlave {
+		return
 	}
 
-	bar[""] = uiprogress.AddBar(l.requests - slavesRequests).AppendCompleted().PrependElapsed()
-	bar[""].PrependFunc(func(b *uiprogress.Bar) string {
-		return fmt.Sprintf("Master ")
-	})
+	p.Start()
 
-	uiprogress.Start()
+	for _, h := range l.hosts {
+		bars[h.addr] = p.AddBar(h.requests).AppendCompleted().PrependElapsed()
+		go func(h Host) {
+			bars[h.addr].PrependFunc(func(b *uiprogress.Bar) string {
+				return strutil.Resize(fmt.Sprintf("Slave (%s)", h.addr), 25)
+			})
+		}(h)
+	}
+
+	bars[""] = p.AddBar(l.requests).AppendCompleted().PrependElapsed()
+	bars[""].PrependFunc(func(b *uiprogress.Bar) string {
+		return strutil.Resize(fmt.Sprintf("Master"), 25)
+	})
 
 	for {
 		r, ok := <-resChn
 		if !ok {
 			break
 		}
-		bar[r.ID].Incr()
+		bars[r.ID].Incr()
 	}
+
+	p.Stop()
 }

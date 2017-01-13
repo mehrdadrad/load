@@ -61,76 +61,42 @@ type ReqLReply struct {
 	respChn chan pb.LoadReply
 }
 
-type server struct{}
-
 var (
 	masterAddr  string
 	slaveID     string
 	lSlave, l   Load
 	config      Config
 	reqLoadChn  chan ReqLReply
-	slaveResChn = make(chan Result, 100)
+	slaveResChn = make(chan Result, 10000)
 	shutdownChn = make(chan struct{}, 1)
 )
 
-func (s *server) SendResult(cx context.Context, in *pb.LoadResMsg) (*pb.Empty, error) {
-	slaveResChn <- Result{
-		ID:        in.ID,
-		Status:    in.Status,
-		URL:       in.Url,
-		Timestamp: in.Timestamp,
+func runSlave(in *pb.WhoAmI) {
+	var err error
+	// send load request to master
+	r, err := loadRequest(in.Laddr)
+	if err != nil {
+		// TODO
 	}
-	return &pb.Empty{}, nil
-}
 
-func (s *server) SendLoad(cx context.Context, in *pb.PowerRequest) (*pb.LoadReply, error) {
-	var respChn = make(chan pb.LoadReply, 1)
-	reqLoadChn <- ReqLReply{in.Core, respChn}
-	loadReply := <-respChn
-	return &loadReply, nil
-}
-
-func (s *server) SendSignal(cx context.Context, in *pb.Signal) (*pb.Empty, error) {
-	for i := 0; i <= lSlave.workers; i++ {
-		shutdownChn <- struct{}{}
+	lSlave = Load{
+		workers:  int(r.Workers),
+		requests: int(r.Requests),
+		urls:     r.Urls,
+		isSlave:  true,
 	}
-	log.Print("Interrupt requested")
-	return &pb.Empty{}, nil
-}
 
-func (s *server) Ping(cx context.Context, in *pb.WhoAmI) (*pb.WhoAmI, error) {
-	log.Print("Got ping from master")
-	masterAddr = in.Laddr
-	slaveID = in.Raddr
-	go func() {
-		var err error
-		// send load request to master
-		r, err := loadRequest(in.Laddr)
+	for _, url := range lSlave.urls {
+		req, err := http.NewRequest("GET", url, nil)
 		if err != nil {
-			// TODO
+			continue
 		}
+		req.Header.Add("User-Agent", r.Useragent)
+		lSlave.request = append(lSlave.request, req)
+	}
 
-		lSlave = Load{
-			workers:  int(r.Workers),
-			requests: int(r.Requests),
-			urls:     r.Urls,
-			isSlave:  true,
-		}
-
-		for _, url := range lSlave.urls {
-			req, err := http.NewRequest("GET", url, nil)
-			if err != nil {
-				continue
-			}
-			req.Header.Add("User-Agent", r.Useragent)
-			lSlave.request = append(lSlave.request, req)
-		}
-
-		log.Printf("Ran slave : worker# %d, requests# %d", lSlave.workers, lSlave.requests)
-		lSlave.Run()
-	}()
-
-	return &pb.WhoAmI{}, nil
+	log.Printf("Ran slave : worker# %d, requests# %d", lSlave.workers, lSlave.requests)
+	lSlave.Run()
 }
 
 func (l *Load) loadBalance() (int, int) {
@@ -273,7 +239,7 @@ func (l *Load) Run() {
 	var (
 		wg0, wg1  sync.WaitGroup
 		wDoneChan = make(chan struct{}, 1)
-		resChan   = make(chan Result, 100)
+		resChan   = make(chan Result, 10000)
 	)
 
 	wg1.Add(1)
@@ -370,7 +336,7 @@ func (l *Load) resultProc(resChan chan Result, wDoneChan chan struct{}) {
 		c          pb.LoadGuideClient
 		counter    int
 		slavesReq       = l.totalSlavesReq()
-		progChn         = make(chan Result, 100)
+		progChn         = make(chan Result, 10000)
 		masterDone bool = l.isSlave
 		slavesDone bool = false
 	)

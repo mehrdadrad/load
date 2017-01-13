@@ -15,9 +15,9 @@ func parseFlags() Config {
 	app.Name = "HTTP(s) Load Testing"
 	app.Version = "0.1.0"
 	app.Flags = []cli.Flag{
-		cli.IntFlag{
+		cli.StringFlag{
 			Name:  "port, p",
-			Value: 9055,
+			Value: "9055",
 			Usage: "listen port master/slave",
 		},
 		cli.IntFlag{
@@ -31,7 +31,7 @@ func parseFlags() Config {
 			Usage: "number of concurrent requests",
 		},
 		cli.StringFlag{
-			Name:  "bind-address",
+			Name:  "listen-bind-address",
 			Usage: "bind local address",
 		},
 		cli.BoolFlag{
@@ -49,16 +49,20 @@ func parseFlags() Config {
 			Value: "load",
 			Usage: "sets user-agent",
 		},
+		cli.BoolFlag{
+			Name: "quiet",
+		},
 	}
 
 	app.Action = func(c *cli.Context) error {
-		config.Port = c.Int("port")
+		config.Port = c.String("port")
 		config.Urls = c.StringSlice("url")
 		config.Hosts = c.StringSlice("slave-host")
 		config.Requests = c.Int("requests")
 		config.Workers = c.Int("concurrency")
 		config.IsSlave = c.Bool("slave")
 		config.UserAgent = c.String("user-agent")
+		config.ListenBindAddr = c.String("listen-bind-addr")
 
 		help = false
 

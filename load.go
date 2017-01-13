@@ -75,9 +75,9 @@ var (
 	masterAddr  string
 	slaveID     string
 	lSlave      Load
+	config      Config
 	reqLoadChn  chan ReqLReply
 	slaveResChn = make(chan Result, 100)
-	sigChn      = make(chan os.Signal, 1)
 	shutdownChn = make(chan struct{}, 1)
 )
 
@@ -518,11 +518,12 @@ func quiet() bool {
 	return false
 }
 
-func intSigHandler(isSlave bool) {
-	if isSlave {
+func (l *Load) sigHandler() {
+	if l.isSlave {
 		return
 	}
 
+	sigChn := make(chan os.Signal, 1)
 	signal.Notify(sigChn, os.Interrupt)
 
 	for {
@@ -536,9 +537,31 @@ func intSigHandler(isSlave bool) {
 	}
 }
 
+func NewLoad() Load {
+	var request []*http.Request
+
+	for _, url := range config.Urls {
+		req, err := http.NewRequest("GET", url, nil)
+		if err != nil {
+			continue
+		}
+		req.Header.Add("User-Agent", config.UserAgent)
+		request = append(request, req)
+	}
+
+	return Load{
+		request:  request,
+		requests: config.Requests,
+		workers:  config.Workers,
+		isSlave:  config.IsSlave,
+		timeout:  time.Duration(2) * time.Second,
+	}
+}
+
 func init() {
-	l = parseFlags()
-	go intSigHandler(l.isSlave)
+	config = parseFlags()
+	l = NewLoad()
+	go l.sigHandler()
 	reqLoadChn = make(chan ReqLReply, len(l.hosts)+1)
 }
 

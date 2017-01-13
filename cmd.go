@@ -1,85 +1,75 @@
 package main
 
+//github.com/urfave/cli
 import (
-	"flag"
-	"log"
-	"net/http"
-	"net/url"
 	"os"
-	"time"
+
+	"github.com/urfave/cli"
 )
 
-type CMDURLs []string
-type CMDHosts []string
+func parseFlags() Config {
+	var config Config
+	var help bool = true
 
-func (i *CMDURLs) Set(value string) error {
-	if _, err := url.ParseRequestURI(value); err != nil {
-		return err
-	}
-	*i = append(*i, value)
-	return nil
-}
-
-func (i *CMDURLs) String() string {
-	return ""
-}
-
-func (i *CMDHosts) Set(value string) error {
-	*i = append(*i, value)
-	return nil
-}
-
-func (i *CMDHosts) String() string {
-	return ""
-}
-
-func parseFlags() Load {
-	var (
-		hosts CMDHosts
-		urls  CMDURLs
-		l     = Load{}
-	)
-
-	flag.Var(&hosts, "h", "slave hosts")
-	flag.Var(&urls, "u", "URLs")
-	flag.StringVar(&opt.port, "p", "9055", "port")
-	flag.StringVar(&opt.mAddr, "b", "", "bind address")
-	flag.BoolVar(&opt.quiet, "q", false, "quiet output")
-	flag.BoolVar(&l.isSlave, "s", false, "slave mode")
-	flag.IntVar(&l.requests, "r", 10, "requests")
-	flag.IntVar(&l.workers, "c", 4, "concurrency")
-	flag.Parse()
-
-	for _, host := range hosts {
-		l.hosts = append(l.hosts, Host{
-			addr:   host,
-			status: false,
-		})
+	app := cli.NewApp()
+	app.Name = "HTTP(s) Load Testing"
+	app.Version = "0.1.0"
+	app.Flags = []cli.Flag{
+		cli.IntFlag{
+			Name:  "port, p",
+			Value: 9055,
+			Usage: "listen port master/slave",
+		},
+		cli.IntFlag{
+			Name:  "requests, r",
+			Value: 10,
+			Usage: "number of requests",
+		},
+		cli.IntFlag{
+			Name:  "concurrency, c",
+			Value: 10,
+			Usage: "number of concurrent requests",
+		},
+		cli.StringFlag{
+			Name:  "bind-address",
+			Usage: "bind local address",
+		},
+		cli.BoolFlag{
+			Name:  "slave",
+			Usage: "sets in slave mode",
+		},
+		cli.StringSliceFlag{
+			Name: "url, u",
+		},
+		cli.StringSliceFlag{
+			Name: "slave-host",
+		},
+		cli.StringFlag{
+			Name:  "user-agent",
+			Value: "load",
+			Usage: "sets user-agent",
+		},
 	}
 
-	if len(urls) < 1 && !l.isSlave {
-		log.Print("you need to specify at least an URL")
-		os.Exit(2)
+	app.Action = func(c *cli.Context) error {
+		config.Port = c.Int("port")
+		config.Urls = c.StringSlice("url")
+		config.Hosts = c.StringSlice("slave-host")
+		config.Requests = c.Int("requests")
+		config.Workers = c.Int("concurrency")
+		config.IsSlave = c.Bool("slave")
+		config.UserAgent = c.String("user-agent")
+
+		help = false
+
+		return nil
 	}
 
-	for _, url := range urls {
-		req, err := http.NewRequest("GET", url, nil)
-		if err != nil {
-			continue
-		}
-		req.Header.Add("User-Agent", "load")
-		l.request = append(l.request, req)
+	app.Run(os.Args)
+
+	if help {
+		os.Exit(0)
 	}
 
-	l.urls = urls
-	l.timeout = time.Duration(2) * time.Second
-
-	return l
-}
-
-func flagUsage() string {
-	// TODO
-	return `
-
-	`
+	return config
 }

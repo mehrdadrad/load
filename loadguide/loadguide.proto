@@ -9,7 +9,7 @@ package loadguide;
 service LoadGuide {
     rpc SendLoad(PowerRequest) returns (LoadReply) {}
     rpc Ping(WhoAmI) returns (WhoAmI) {}
-    rpc SendResult(LoadResMsg) returns (Empty) {}
+    rpc SendResult(stream LoadResMsg) returns (Empty) {}
     rpc SendSignal(Signal) returns (Empty) {}
 }
 

@@ -20,14 +20,6 @@ import (
 	"google.golang.org/grpc/reflection"
 )
 
-type Options struct {
-	urls  string
-	port  string
-	mAddr string
-
-	quiet bool
-}
-
 type Host struct {
 	addr     string
 	requests int
@@ -74,7 +66,7 @@ type server struct{}
 var (
 	masterAddr  string
 	slaveID     string
-	lSlave      Load
+	lSlave, l   Load
 	config      Config
 	reqLoadChn  chan ReqLReply
 	slaveResChn = make(chan Result, 100)
@@ -130,7 +122,7 @@ func (s *server) Ping(cx context.Context, in *pb.WhoAmI) (*pb.WhoAmI, error) {
 			if err != nil {
 				continue
 			}
-			req.Header.Add("User-Agent", "load")
+			req.Header.Add("User-Agent", r.Useragent)
 			lSlave.request = append(lSlave.request, req)
 		}
 
@@ -168,14 +160,19 @@ func (l *Load) loadBalance() (int, int) {
 
 		l.hosts[i].requests = int(requests)
 
-		h.reqLoad.respChn <- pb.LoadReply{Workers: workers, Requests: requests, Urls: l.urls}
+		h.reqLoad.respChn <- pb.LoadReply{
+			Workers:   workers,
+			Requests:  requests,
+			Urls:      l.urls,
+			Useragent: config.UserAgent,
+		}
 	}
 
 	return rRequests, rWorkers
 }
 
 func (l *Load) gRPCServer() {
-	hostPort := net.JoinHostPort(opt.mAddr, opt.port)
+	hostPort := net.JoinHostPort(config.ListenBindAddr, config.Port)
 	lis, err := net.Listen("tcp", hostPort)
 	if err != nil {
 		log.Print(err.Error())
@@ -193,7 +190,7 @@ func (l *Load) gRPCServer() {
 }
 
 func (l *Load) ping(addr string) (*pb.WhoAmI, error) {
-	hostPort := net.JoinHostPort(addr, opt.port)
+	hostPort := net.JoinHostPort(addr, config.Port)
 	conn, err := grpc.Dial(hostPort, grpc.WithInsecure())
 	if err != nil {
 		return &pb.WhoAmI{}, err
@@ -214,7 +211,7 @@ func (l *Load) ping(addr string) (*pb.WhoAmI, error) {
 }
 
 func loadRequest(addr string) (*pb.LoadReply, error) {
-	hostPort := net.JoinHostPort(addr, opt.port)
+	hostPort := net.JoinHostPort(addr, config.Port)
 	conn, err := grpc.Dial(hostPort, grpc.WithInsecure())
 	if err != nil {
 		return nil, err
@@ -254,7 +251,7 @@ func sendResult(addr string) (*pb.LoadReply, error) {
 }
 
 func sendSignal(addr string, signal int) (*pb.Empty, error) {
-	hostPort := net.JoinHostPort(addr, opt.port)
+	hostPort := net.JoinHostPort(addr, config.Port)
 	conn, err := grpc.Dial(hostPort, grpc.WithInsecure())
 	if err != nil {
 		return nil, err
@@ -477,11 +474,6 @@ func (l *Load) chkHosts(hosts []Host) bool {
 	return allUp
 }
 
-var (
-	opt Options
-	l   Load
-)
-
 func (l *Load) gracefullStop() {
 	close(shutdownChn)
 
@@ -512,7 +504,7 @@ func getLocalAddr(rAddr string) (string, error) {
 }
 
 func quiet() bool {
-	if opt.quiet {
+	if config.Quiet {
 		return true
 	}
 	return false
@@ -538,7 +530,10 @@ func (l *Load) sigHandler() {
 }
 
 func NewLoad() Load {
-	var request []*http.Request
+	var (
+		request []*http.Request
+		hosts   []Host
+	)
 
 	for _, url := range config.Urls {
 		req, err := http.NewRequest("GET", url, nil)
@@ -548,12 +543,18 @@ func NewLoad() Load {
 		req.Header.Add("User-Agent", config.UserAgent)
 		request = append(request, req)
 	}
-
+	for _, host := range config.Hosts {
+		hosts = append(hosts, Host{
+			addr:   host,
+			status: false,
+		})
+	}
 	return Load{
 		request:  request,
 		requests: config.Requests,
 		workers:  config.Workers,
 		isSlave:  config.IsSlave,
+		hosts:    hosts,
 		timeout:  time.Duration(2) * time.Second,
 	}
 }

@@ -164,6 +164,7 @@ func (l *Load) loadBalance() (int, int) {
 			Workers:   workers,
 			Requests:  requests,
 			Urls:      l.urls,
+			Timeout:   int32(config.HTTPTimeout),
 			Useragent: config.UserAgent,
 		}
 	}
@@ -554,8 +555,9 @@ func NewLoad() Load {
 		requests: config.Requests,
 		workers:  config.Workers,
 		isSlave:  config.IsSlave,
+		urls:     config.Urls,
 		hosts:    hosts,
-		timeout:  time.Duration(2) * time.Second,
+		timeout:  time.Duration(config.HTTPTimeout) * time.Second,
 	}
 }
 

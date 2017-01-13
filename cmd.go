@@ -49,6 +49,11 @@ func parseFlags() Config {
 			Value: "load",
 			Usage: "sets user-agent",
 		},
+		cli.IntFlag{
+			Name:  "http-timeout",
+			Value: 2,
+			Usage: "HTTP(s) timeout",
+		},
 		cli.BoolFlag{
 			Name: "quiet",
 		},
@@ -63,6 +68,7 @@ func parseFlags() Config {
 		config.IsSlave = c.Bool("slave")
 		config.UserAgent = c.String("user-agent")
 		config.ListenBindAddr = c.String("listen-bind-addr")
+		config.HTTPTimeout = c.Int("http-timeout")
 
 		help = false
 
